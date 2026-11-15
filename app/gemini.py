@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from google import genai
 from google.genai import types
 
@@ -48,26 +46,8 @@ class GeminiClient:
         except Exception as exc:
             raise GeminiRequestError("check your internet connection, API key, and model availability") from exc
 
-    def transcribe_audio(self, path: str | Path) -> str:
-        file_path = Path(path)
-        if not file_path.exists():
-            raise GeminiRequestError("the audio file was not created successfully")
-        data = file_path.read_bytes()
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=[
-                    "Transcribe the spoken words in this clip. Return only the transcript, no commentary.",
-                    types.Part.from_bytes(data=data, mime_type="audio/wav"),
-                ],
-                config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=512),
-            )
-            text = (response.text or "").strip()
-            if not text:
-                raise GeminiRequestError("the transcript was empty")
-            return text
-        except Exception as exc:
-            raise GeminiRequestError("check that the mic recording is valid and the API key can access the model") from exc
-
     def close(self) -> None:
-        self.client.close()
+        try:
+            self.client.close()
+        except Exception:
+            pass
