@@ -1,48 +1,22 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 from dotenv import load_dotenv
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QLabel, QInputDialog, QLineEdit, QMainWindow,
+    QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from app.audio import LiveVoiceWorker
+from app.assistant import PersonalAssistant
+from app.audio import record_wav
 from app.config import DEFAULT_SETTINGS
 from app.credentials import CredentialStoreError, load_api_key, save_api_key
 from app.memory import MemoryStore
 from app.ui.hud import HudWidget
-
-
-class ApiKeyDialog(QDialog):
-    def __init__(self, parent: QWidget, has_key: bool):
-        super().__init__(parent)
-        self.setWindowTitle("Connect Gemini Live")
-        self.setMinimumWidth(420)
-        layout = QVBoxLayout(self)
-        explanation = QLabel(
-            "Enter your Gemini API key. It is saved in your operating system's credential store, "
-            "not in this project. While a voice session is active, microphone audio is streamed to Google. "
-            "Click End conversation to stop the microphone."
-        )
-        explanation.setWordWrap(True)
-        layout.addWidget(explanation)
-        self.key_edit = QLineEdit()
-        self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key_edit.setPlaceholderText("Gemini API key")
-        self.key_edit.setClearButtonEnabled(True)
-        layout.addWidget(self.key_edit)
-        if has_key:
-            note = QLabel("A key is already configured. Enter a replacement, or leave blank to keep it.")
-            note.setWordWrap(True)
-            layout.addWidget(note)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
 
 
 class IpaApp(QMainWindow):
@@ -50,151 +24,178 @@ class IpaApp(QMainWindow):
         super().__init__()
         self.settings = DEFAULT_SETTINGS
         self.settings.ensure_dirs()
-        self.memory = MemoryStore(self.settings.memory_file)
-        self.worker: LiveVoiceWorker | None = None
+        self.memory_store = MemoryStore(self.settings.memory_file)
+        self.assistant = PersonalAssistant(self.settings, self.memory_store)
+        self._speech_process = None
+        self._speech_timer = QTimer(self)
+        self._speech_timer.timeout.connect(self._check_speech)
+
         self.setWindowTitle(self.settings.app_name)
-        self.resize(960, 760)
+        self.resize(980, 760)
         self.setMinimumSize(720, 600)
         self.setStyleSheet("""
-            QMainWindow, QWidget { background: #070b0a; color: #e8edf2; }
+            QMainWindow, QWidget { background: #071018; color: #e8edf2; }
             QLabel { color: #dce5eb; }
-            QTextEdit { background: #0c1110; border: 1px solid #392819; border-radius: 8px; padding: 9px; color: #eef4f7; }
-            QPushButton { background: #171b18; border: 1px solid #5b4024; border-radius: 8px; padding: 9px 14px; color: #f3d4a9; }
-            QPushButton:hover { background: #29231a; border-color: #e3a34f; }
+            QLineEdit, QTextEdit { background: #0c1822; border: 1px solid #263744;
+                border-radius: 8px; padding: 9px; color: #eef4f7; selection-background-color: #89531e; }
+            QPushButton { background: #17232c; border: 1px solid #394955; border-radius: 8px;
+                padding: 8px 13px; color: #f3d4a9; }
+            QPushButton:hover { background: #26323a; border-color: #d89342; }
             QPushButton:disabled { color: #66717a; }
         """)
 
         root = QWidget()
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setContentsMargins(22, 16, 22, 18)
+        layout.setSpacing(12)
+
         header = QHBoxLayout()
         title = QLabel(self.settings.assistant_name)
         title.setStyleSheet("font-size: 22px; letter-spacing: 4px; color: #f4d29d;")
         header.addWidget(title)
         header.addStretch()
-        self.status_label = QLabel("IDLE")
+        self.status_label = QLabel("IDLE · SET UP GEMINI")
         self.status_label.setStyleSheet("color: #c28a4c; letter-spacing: 2px;")
         header.addWidget(self.status_label)
-        self.settings_button = QPushButton("Gemini settings")
-        self.settings_button.clicked.connect(self._settings)
-        header.addWidget(self.settings_button)
-        self.memory_button = QPushButton("Memory")
-        self.memory_button.clicked.connect(self._show_memory)
-        header.addWidget(self.memory_button)
+        settings_btn = QPushButton("Settings")
+        settings_btn.clicked.connect(self._show_settings)
+        header.addWidget(settings_btn)
+        memory_btn = QPushButton("Memory")
+        memory_btn.clicked.connect(self._show_memory)
+        header.addWidget(memory_btn)
         layout.addLayout(header)
 
         self.hud = HudWidget(self.settings.assistant_name)
         layout.addWidget(self.hud, stretch=4)
+
         self.chat = QTextEdit()
         self.chat.setReadOnly(True)
-        self.chat.setMaximumHeight(170)
+        self.chat.setMaximumHeight(145)
+        self.chat.setPlaceholderText("Your conversation will appear here.")
         layout.addWidget(self.chat, stretch=1)
 
-        controls = QHBoxLayout()
-        self.talk_button = QPushButton("Start talking")
-        self.talk_button.setMinimumHeight(44)
-        self.talk_button.clicked.connect(self._toggle_talk)
-        controls.addWidget(self.talk_button, stretch=1)
-        self.end_button = QPushButton("End conversation")
-        self.end_button.setEnabled(False)
-        self.end_button.clicked.connect(self._stop_talk)
-        controls.addWidget(self.end_button)
-        layout.addLayout(controls)
-        self.note = QLabel("Microphone is off. Click Start talking to begin a live Gemini voice session.")
-        self.note.setWordWrap(True)
-        self.note.setStyleSheet("color: #9a8b78; font-size: 11px;")
+        row = QHBoxLayout()
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Ask I.P.A. · try ‘remember favorite color = amber’")
+        self.input.returnPressed.connect(self._send)
+        row.addWidget(self.input, stretch=1)
+
+        self.listen_btn = QPushButton("Listen")
+        self.listen_btn.clicked.connect(self._listen)
+        row.addWidget(self.listen_btn)
+
+        self.voice_btn = QPushButton("Speak reply")
+        self.voice_btn.clicked.connect(self._speak_latest)
+        self.voice_btn.setEnabled(sys.platform == "darwin")
+        row.addWidget(self.voice_btn)
+
+        self.send_btn = QPushButton("Send")
+        self.send_btn.clicked.connect(self._send)
+        row.addWidget(self.send_btn)
+        layout.addLayout(row)
+
+        self.note = QLabel("Voice input is available for short recordings. Gemini must be configured first.")
+        self.note.setStyleSheet("color: #84919b; font-size: 11px;")
         layout.addWidget(self.note)
+
         self.setCentralWidget(root)
-        self._append("I.P.A.", "Ready. Start talking when you want to open a live voice conversation.")
-        self._refresh_status("idle")
+        self._append("I.P.A.", "I’m ready. You can type or press Listen to record a short voice prompt.")
+        self._set_status("idle")
 
     def _append(self, speaker: str, text: str) -> None:
         safe = str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        self.chat.append(f'<span style="color:#e2a04f"><b>{speaker}</b></span> &nbsp; {safe}')
+        self.chat.append(f'<span style="color:#d99a4e"><b>{speaker}</b></span> &nbsp; {safe}')
 
-    def _get_key(self) -> str | None:
-        key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-        if key:
-            return key
-        try:
-            return load_api_key()
-        except CredentialStoreError:
-            return None
-
-    def _refresh_status(self, state: str) -> None:
-        self.status_label.setText(state.upper())
+    def _set_status(self, state: str) -> None:
         self.hud.set_status(state)
-        if state == "listening":
-            self.note.setText("Live microphone is on and audio is being streamed to Gemini. Click End conversation to stop.")
-        elif state == "speaking":
-            self.note.setText("Gemini is speaking. You can continue talking to interrupt or respond.")
-        elif state == "connecting":
-            self.note.setText("Connecting to Gemini Live…")
-        else:
-            self.note.setText("Microphone is off. Click Start talking to begin a live Gemini voice session.")
+        suffix = "GEMINI" if self.assistant.gemini_configured else "NO API KEY"
+        self.status_label.setText(f"{state.upper()} · {suffix}")
+        self.note.setText(
+            "Gemini connected · text chat and voice prompts are ready." if self.assistant.gemini_configured
+            else "Add GOOGLE_API_KEY or set Gemini in Settings to enable voice prompts."
+        )
 
-    def _toggle_talk(self) -> None:
-        if self.worker and self.worker.isRunning():
-            self._stop_talk()
+    def _send(self) -> None:
+        text = self.input.text().strip()
+        if not text:
             return
-        key = self._get_key()
-        if not key:
-            QMessageBox.information(self, "Gemini key needed", "Click Gemini settings and enter your API key first.")
+        self.input.clear()
+        self._append("YOU", text)
+        self._set_status("thinking")
+        response = self.assistant.ask(text)
+        self._append(self.settings.assistant_name, response)
+        self._set_status("idle")
+
+    def _listen(self) -> None:
+        if not self.assistant.gemini_configured:
+            QMessageBox.warning(self, "Gemini not configured", "Open Settings and add a Gemini API key before using voice input.")
             return
-        self.worker = LiveVoiceWorker(key, self.settings.gemini_model)
-        self.worker.status_changed.connect(self._refresh_status)
-        self.worker.transcript.connect(self._on_transcript)
-        self.worker.failed.connect(self._on_voice_error)
-        self.worker.finished.connect(self._on_voice_finished)
-        self.talk_button.setText("Conversation active")
-        self.talk_button.setEnabled(False)
-        self.end_button.setEnabled(True)
-        self.worker.start()
+        self._set_status("listening")
+        try:
+            audio_path = "data/mic_capture.wav"
+            record_wav(audio_path, seconds=5.0)
+            transcript = self.assistant.transcribe_audio_file(audio_path)
+            if transcript.startswith("Gemini isn’t configured") or transcript.startswith("I couldn’t transcribe"):
+                self._append("SYSTEM", transcript)
+                self._set_status("idle")
+                return
+            self._append("VOICE", transcript)
+            self._set_status("thinking")
+            response = self.assistant.ask(transcript)
+            self._append(self.settings.assistant_name, response)
+            self._set_status("idle")
+        except Exception as exc:
+            self._set_status("idle")
+            QMessageBox.warning(self, "Microphone issue", f"Could not capture audio: {exc}")
 
-    def _stop_talk(self) -> None:
-        if self.worker and self.worker.isRunning():
-            self._refresh_status("ending")
-            self.end_button.setEnabled(False)
-            self.worker.stop()
-
-    def _on_transcript(self, line: str) -> None:
-        if ":" in line:
-            speaker, text = line.split(":", 1)
-            self._append(speaker, text.strip())
-
-    def _on_voice_error(self, message: str) -> None:
-        self._append("SYSTEM", message)
-        QMessageBox.warning(self, "Voice conversation", message)
-
-    def _on_voice_finished(self) -> None:
-        self.talk_button.setEnabled(True)
-        self.talk_button.setText("Start talking")
-        self.end_button.setEnabled(False)
-        self._refresh_status("idle")
-
-    def _settings(self) -> None:
-        dialog = ApiKeyDialog(self, bool(self._get_key()))
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+    def _speak_latest(self) -> None:
+        if sys.platform != "darwin":
             return
-        key = dialog.key_edit.text().strip()
-        if not key:
-            QMessageBox.information(self, "Gemini", "No changes made.")
+        text = self.assistant.state.last_response.strip()
+        if not text or (self._speech_process and self._speech_process.poll() is None):
             return
         try:
-            save_api_key(key)
-            QMessageBox.information(self, "Gemini", "API key saved in the OS credential store.")
-        except CredentialStoreError as exc:
-            QMessageBox.warning(self, "Secure storage unavailable", f"{exc}\n\nSet GOOGLE_API_KEY in your shell instead; the key will not be saved in the project.")
+            self._speech_process = subprocess.Popen(["say", text])
+            self._set_status("speaking")
+            self._speech_timer.start(100)
+        except OSError as exc:
+            QMessageBox.warning(self, "Speech unavailable", str(exc))
+
+    def _check_speech(self) -> None:
+        if self._speech_process is None or self._speech_process.poll() is not None:
+            self._speech_timer.stop()
+            self._speech_process = None
+            self._set_status("idle")
 
     def _show_memory(self) -> None:
-        facts = self.memory.load()
-        text = "\n".join(f"{key}: {value}" for key, value in facts.items()) or "No saved memories yet."
-        QMessageBox.information(self, "Local memory", text)
+        facts = self.memory_store.load()
+        body = "\n".join(f"{key}: {value}" for key, value in facts.items()) or "No saved memories yet."
+        QMessageBox.information(self, "Local memory", body)
+
+    def _show_settings(self) -> None:
+        current = self.assistant._api_key() or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        value, ok = QInputDialog.getText(
+            self,
+            "Gemini API key",
+            f"Current: {'saved' if current else 'not set'}\n\nPaste your Gemini API key:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok or not value.strip():
+            return
+        key = value.strip()
+        try:
+            save_api_key(key)
+            self.assistant.refresh_saved_api_key()
+            self.assistant.set_api_key(None)
+            self._set_status("idle")
+            QMessageBox.information(self, "Gemini configured", "Your key was saved securely. The app is ready to use.")
+        except CredentialStoreError as exc:
+            QMessageBox.warning(self, "Secure storage unavailable", f"{exc}\n\nSet GOOGLE_API_KEY in your shell instead.")
 
     def closeEvent(self, event) -> None:
-        if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            self.worker.wait(3000)
+        if self._speech_process and self._speech_process.poll() is None:
+            self._speech_process.terminate()
+        self.assistant.close()
         super().closeEvent(event)
 
 

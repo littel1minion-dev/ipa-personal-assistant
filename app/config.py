@@ -11,7 +11,7 @@ class Settings:
     assistant_name: str = "I.P.A."
     data_dir: Path = field(default_factory=lambda: Path("data"))
     memory_file: Path = field(default_factory=lambda: Path("data/memory.json"))
-    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_LIVE_MODEL", "gemini-3.8-live"))
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

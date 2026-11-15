@@ -7,11 +7,11 @@ from google.genai import types
 
 
 class GeminiConfigurationError(RuntimeError):
-    """Gemini credentials or SDK are not configured."""
+    """The Gemini SDK or credentials are not configured."""
 
 
 class GeminiRequestError(RuntimeError):
-    """The Gemini service could not complete a request."""
+    """Gemini rejected or failed to answer a request."""
 
 
 class GeminiClient:
@@ -20,29 +20,54 @@ class GeminiClient:
         try:
             self.client = genai.Client(api_key=api_key) if api_key else genai.Client()
         except Exception as exc:
-            raise GeminiConfigurationError("check the API key and google-genai installation") from exc
+            raise GeminiConfigurationError("check that your API key and google-genai installation are valid") from exc
 
     def generate(self, prompt: str, history: list[tuple[str, str]]) -> str:
-        contents = [
-            "You are I.P.A., a helpful and concise desktop assistant. Be transparent about uncertainty. "
-            "Do not claim to perform actions unless an enabled integration actually did them."
+        transcript = [
+            "You are I.P.A. (Ian's Personal Assistant), a calm, concise and helpful desktop assistant. "
+            "Be transparent about uncertainty. Do not claim to control devices, access files, or take actions "
+            "unless the user explicitly enabled an integration that can do so. Local memory commands are "
+            "handled by the app and are not part of this model request."
         ]
-        contents.extend(f"{role}: {message}" for role, message in history[-12:])
-        contents.append(f"user: {prompt}")
+        for role, message in history[-12:]:
+            label = "User" if role == "user" else "I.P.A."
+            transcript.append(f"{label}: {message}")
+        transcript.append(f"User: {prompt}\nI.P.A.:")
         try:
             response = self.client.models.generate_content(
                 model=self.model,
-                contents="\n\n".join(contents),
+                contents="\n\n".join(transcript),
                 config=types.GenerateContentConfig(temperature=0.7, max_output_tokens=1024),
             )
-            text = (response.text or "").strip()
-            if not text:
-                raise GeminiRequestError("Gemini returned an empty response")
-            return text
+            answer = (response.text or "").strip()
+            if not answer:
+                raise GeminiRequestError("the model returned an empty response")
+            return answer
         except GeminiRequestError:
             raise
         except Exception as exc:
-            raise GeminiRequestError("check connection, API key, and model availability") from exc
+            raise GeminiRequestError("check your internet connection, API key, and model availability") from exc
+
+    def transcribe_audio(self, path: str | Path) -> str:
+        file_path = Path(path)
+        if not file_path.exists():
+            raise GeminiRequestError("the audio file was not created successfully")
+        data = file_path.read_bytes()
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[
+                    "Transcribe the spoken words in this clip. Return only the transcript, no commentary.",
+                    types.Part.from_bytes(data=data, mime_type="audio/wav"),
+                ],
+                config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=512),
+            )
+            text = (response.text or "").strip()
+            if not text:
+                raise GeminiRequestError("the transcript was empty")
+            return text
+        except Exception as exc:
+            raise GeminiRequestError("check that the mic recording is valid and the API key can access the model") from exc
 
     def close(self) -> None:
         self.client.close()
