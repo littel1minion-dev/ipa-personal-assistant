@@ -1,23 +1,16 @@
 # Ian's Personal Assistant (I.P.A.)
 
-An original, macOS-first desktop assistant prototype with a procedural amber HUD, local memory, and optional Gemini text chat.
+An original, macOS-first desktop assistant prototype with a procedural amber HUD, local memory, and optional Gemini chat.
 
-## Current features
-- Original animated amber particle sphere and scanner-style interface.
-- Text chat with Gemini using Google's `google-genai` Python SDK.
-- Conversation context retained in the current app session.
-- Local key/value memory commands: `remember key = value`, `forget key`, and `what do you remember`.
-- Memory viewer.
-- macOS speech output using the built-in `say` command.
-- API requests run in a background thread so the interface remains responsive.
+## Add your Gemini key from inside the app
+1. Start I.P.A. using the run steps below.
+2. Click **Settings**.
+3. Paste your Gemini API key into the password field and click **Save**.
+4. Send a message to test the connection.
 
-## Configure Gemini
-1. Create a Gemini API key in Google AI Studio.
-2. Copy `.env.example` to `.env` in the project root.
-3. Put your key in `.env` as `GOOGLE_API_KEY=your_key_here`.
-4. Restart I.P.A.
+The key is stored using the operating system's credential manager (macOS Keychain, Windows Credential Manager, or the configured Linux keyring), not in the repository or a plain-text settings file. If secure storage is unavailable, the app offers a session-only option; that key is discarded when the app closes. Do not share your key. Messages you send to Gemini are sent to Google, so avoid including sensitive information.
 
-Never commit `.env` or paste an API key into Python source. `.env` is ignored by Git. Requests typed into I.P.A. are sent to Google's Gemini API when the key is configured; avoid entering sensitive information unless you are comfortable sending it to that provider. Local `remember`/`forget` commands are handled on-device and are not sent as Gemini prompts.
+You can alternatively set `GOOGLE_API_KEY` in a local `.env` file. `.env` is ignored by Git.
 
 ## Run on macOS
 Requires Python 3.10+.
@@ -26,27 +19,35 @@ Requires Python 3.10+.
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-cp .env.example .env
-# Edit .env and add your Gemini API key, then:
 python main.py
 ```
 
-Windows PowerShell equivalent for activating the venv is `.venv\\Scripts\\Activate.ps1`; launch using `python main.py`.
+Windows PowerShell:
 
-To save a local memory, type e.g. `remember favorite color = amber`. Use the **Memory** button to inspect saved facts or `forget favorite color` to remove one. Memory is stored in `data/memory.json`, which is excluded from Git.
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python main.py
+```
 
-On macOS, click **Speak reply** to read the latest assistant reply aloud. Microphone capture and speech transcription are not implemented yet; voice input is a future step.
+## Current features
+- Original animated amber particle sphere and scanner-style interface.
+- Gemini chat with conversation context in the current app session.
+- API calls in a background thread, keeping the UI responsive.
+- Key/value local memory commands: `remember key = value`, `forget key`, and `what do you remember`.
+- macOS speech output using the built-in `say` command.
 
-## Model setting
-The default model is `gemini-2.5-flash`. Override it in `.env` with `GEMINI_MODEL=...` if you want to use another model available to your API key.
+Memory is stored in `data/memory.json`, which is excluded from Git. Microphone input and speech transcription are not implemented yet.
 
-## Layout
-- `main.py` — desktop UI and background worker
-- `app/assistant.py` — local commands and assistant turn handling
+## Project layout
+- `main.py` — desktop UI, settings dialog, and background worker
+- `app/assistant.py` — local commands and Gemini orchestration
+- `app/credentials.py` — secure OS credential store integration
 - `app/gemini.py` — Gemini SDK wrapper
 - `app/config.py` — app settings
 - `app/memory.py` — local JSON memory
 - `app/ui/hud.py` — original procedural HUD renderer
 
 ## Privacy notes
-This is an early prototype, not an always-listening assistant. It does not record audio. Keep API keys private, review Gemini's current terms and billing/quotas, and do not send confidential prompts unless permitted by your policies.
+Keep the API key private. Typed prompts are sent to Gemini when configured. Local memory commands are handled on-device. Review Gemini's current terms and billing/quotas before use.

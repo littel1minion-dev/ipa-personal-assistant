@@ -13,10 +13,10 @@ class GeminiRequestError(RuntimeError):
 
 
 class GeminiClient:
-    def __init__(self, model: str):
+    def __init__(self, model: str, api_key: str | None = None):
         self.model = model
         try:
-            self.client = genai.Client()
+            self.client = genai.Client(api_key=api_key) if api_key else genai.Client()
         except Exception as exc:
             raise GeminiConfigurationError("check that your API key and google-genai installation are valid") from exc
 

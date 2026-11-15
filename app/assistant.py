@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from app.credentials import CredentialStoreError, load_api_key
 from app.gemini import GeminiClient, GeminiConfigurationError, GeminiRequestError
 
 
@@ -21,10 +22,31 @@ class PersonalAssistant:
         self.memory = memory_store
         self.state = AssistantState()
         self._gemini: GeminiClient | None = None
+        self._api_key_override: str | None = None
+        try:
+            self._saved_api_key = load_api_key()
+        except CredentialStoreError:
+            self._saved_api_key = None
 
     @property
     def gemini_configured(self) -> bool:
-        return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+        return bool(self._api_key() or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+
+    def _api_key(self) -> str | None:
+        return self._api_key_override or self._saved_api_key
+
+    def set_api_key(self, api_key: str | None) -> None:
+        """Use a key entered in Settings and rebuild the lazy Gemini client."""
+        if self._gemini is not None:
+            self._gemini.close()
+            self._gemini = None
+        self._api_key_override = api_key.strip() if api_key and api_key.strip() else None
+
+    def refresh_saved_api_key(self) -> None:
+        self._saved_api_key = load_api_key()
+        if self._gemini is not None:
+            self._gemini.close()
+            self._gemini = None
 
     def set_status(self, status: str) -> None:
         self.state.status = status
@@ -74,14 +96,17 @@ class PersonalAssistant:
         return None
 
     def _ask_gemini(self, text: str) -> str:
-        if not self.gemini_configured:
-            return (
-                "Gemini isn’t configured yet. Add your key to a local .env file as "
-                "GOOGLE_API_KEY=your_key, then restart I.P.A. See the README for setup."
-            )
+        api_key = self._api_key() or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return "Gemini isn’t configured. Open Settings and add your Gemini API key to connect."
         try:
             if self._gemini is None:
-                self._gemini = GeminiClient(self.settings.gemini_model)
+                self._gemini = GeminiClient(self.settings.gemini_model, api_key=api_key)
             return self._gemini.generate(text, self.state.history)
         except (GeminiConfigurationError, GeminiRequestError) as exc:
             return f"I couldn’t reach Gemini: {exc}"
+
+    def close(self) -> None:
+        if self._gemini is not None:
+            self._gemini.close()
+            self._gemini = None

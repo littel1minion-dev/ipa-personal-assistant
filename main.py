@@ -6,12 +6,13 @@ import sys
 from dotenv import load_dotenv
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from app.assistant import PersonalAssistant
 from app.config import DEFAULT_SETTINGS
+from app.credentials import CredentialStoreError, delete_api_key, save_api_key
 from app.memory import MemoryStore
 from app.ui.hud import HudWidget
 
@@ -27,9 +28,41 @@ class AskWorker(QThread):
     def run(self) -> None:
         try:
             result = self.assistant.ask(self.prompt)
-        except Exception as exc:  # Keep unexpected provider errors out of the Qt event loop.
+        except Exception as exc:
             result = f"The request failed: {exc}"
         self.completed.emit(result)
+
+
+class ApiKeyDialog(QDialog):
+    def __init__(self, parent: QWidget, has_key: bool):
+        super().__init__(parent)
+        self.setWindowTitle("Connect Gemini")
+        self.setMinimumWidth(440)
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            "Paste your Gemini API key below. I.P.A. stores it in your operating system’s "
+            "secure credential store (Keychain on macOS, Credential Manager on Windows, "
+            "or the configured keyring on Linux). The key is not written to the project files."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        self.key_input = QLineEdit()
+        self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key_input.setPlaceholderText("Gemini API key")
+        self.key_input.setClearButtonEnabled(True)
+        layout.addWidget(self.key_input)
+        if has_key:
+            current = QLabel("A key is already configured. Enter a replacement, or leave blank to keep it.")
+            current.setWordWrap(True)
+            layout.addWidget(current)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @property
+    def api_key(self) -> str:
+        return self.key_input.text().strip()
 
 
 class IpaApp(QMainWindow):
@@ -65,7 +98,7 @@ class IpaApp(QMainWindow):
         title.setStyleSheet("font-size: 22px; letter-spacing: 4px; color: #f4d29d;")
         header.addWidget(title)
         header.addStretch()
-        self.status_label = QLabel("IDLE · GEMINI" if self.assistant.gemini_configured else "IDLE · SET UP GEMINI")
+        self.status_label = QLabel()
         self.status_label.setStyleSheet("color: #c28a4c; letter-spacing: 2px;")
         header.addWidget(self.status_label)
         settings_btn = QPushButton("Settings")
@@ -109,14 +142,11 @@ class IpaApp(QMainWindow):
         row.addWidget(self.send_btn)
         layout.addLayout(row)
 
-        note_text = "Gemini connected · text chat is ready." if self.assistant.gemini_configured else (
-            "Add GOOGLE_API_KEY to .env to enable Gemini. Microphone capture is not wired up yet."
-        )
-        self.note = QLabel(note_text)
+        self.note = QLabel()
         self.note.setStyleSheet("color: #84919b; font-size: 11px;")
         layout.addWidget(self.note)
         self.setCentralWidget(root)
-        self._append("I.P.A.", "I’m ready. This app sends your messages to Gemini when a key is configured; local memory commands stay on this device.")
+        self._append("I.P.A.", "I’m ready. Configure Gemini in Settings to begin, or use local memory commands.")
         self._set_status("idle")
         self._speech_timer = QTimer(self)
         self._speech_timer.timeout.connect(self._check_speech)
@@ -127,8 +157,12 @@ class IpaApp(QMainWindow):
 
     def _set_status(self, state: str) -> None:
         self.hud.set_status(state)
-        suffix = "GEMINI" if self.assistant.gemini_configured else "NO API KEY"
+        suffix = "GEMINI CONFIGURED" if self.assistant.gemini_configured else "SET UP GEMINI"
         self.status_label.setText(f"{state.upper()} · {suffix}")
+        self.note.setText(
+            "Gemini configured · normal prompts are sent to Google." if self.assistant.gemini_configured
+            else "Open Settings to enter your Gemini API key. Microphone input is not implemented yet."
+        )
 
     def _send(self) -> None:
         text = self.input.text().strip()
@@ -157,6 +191,36 @@ class IpaApp(QMainWindow):
         self.input.setFocus()
         self._set_status("idle")
 
+    def _show_settings(self) -> None:
+        dialog = ApiKeyDialog(self, self.assistant.gemini_configured)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        api_key = dialog.api_key
+        if not api_key:
+            QMessageBox.information(self, "Gemini", "No changes made.")
+            return
+        try:
+            save_api_key(api_key)
+            self.assistant.refresh_saved_api_key()
+            self.assistant.set_api_key(None)
+            QMessageBox.information(self, "Gemini connected", "Your key was saved securely. Send a message to test the connection.")
+        except CredentialStoreError as exc:
+            choice = QMessageBox.question(
+                self, "Secure storage unavailable",
+                f"{exc}. Use this key for this app session only? It will not be saved and will be lost when I.P.A. closes.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if choice == QMessageBox.StandardButton.Yes:
+                self.assistant.set_api_key(api_key)
+                QMessageBox.information(self, "Gemini configured", "The key is active for this session only.")
+        self._set_status("idle")
+
+    def _show_memory(self) -> None:
+        facts = self.memory_store.load()
+        body = "\n".join(f"{key}: {value}" for key, value in facts.items()) or "No saved memories yet."
+        QMessageBox.information(self, "Local memory", body)
+
     def _speak_latest(self) -> None:
         if sys.platform != "darwin":
             return
@@ -176,26 +240,12 @@ class IpaApp(QMainWindow):
             self._speech_process = None
             self._set_status("idle")
 
-    def _show_memory(self) -> None:
-        facts = self.memory_store.load()
-        body = "\n".join(f"{key}: {value}" for key, value in facts.items()) or "No saved memories yet."
-        QMessageBox.information(self, "Local memory", body)
-
-    def _show_settings(self) -> None:
-        key_status = "Gemini API key detected." if self.assistant.gemini_configured else "No Gemini API key detected."
-        QMessageBox.information(
-            self, "I.P.A. settings",
-            f"{key_status}\nModel: {self.settings.gemini_model}\n\n"
-            "Set GOOGLE_API_KEY in your local .env file and restart the app. "
-            "Never paste or commit your API key into source files.\n\n"
-            "Microphone capture is not enabled yet. macOS speech output is available via ‘Speak reply’.",
-        )
-
     def closeEvent(self, event) -> None:
         if self._speech_process and self._speech_process.poll() is None:
             self._speech_process.terminate()
         if self._worker and self._worker.isRunning():
             self._worker.wait(1500)
+        self.assistant.close()
         super().closeEvent(event)
 
 
