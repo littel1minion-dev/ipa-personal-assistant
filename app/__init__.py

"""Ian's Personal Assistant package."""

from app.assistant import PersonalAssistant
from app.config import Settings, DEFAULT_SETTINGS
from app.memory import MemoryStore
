@@ -1,0 +1,22 @@
+from __future__ import annotations
+
+from app.config import DEFAULT_SETTINGS
+from app.memory import MemoryStore
+from app.assistant import PersonalAssistant
+from app.ui.hud import HudWidget
+from PyQt6.QtWidgets import QApplication
+
+
+if __name__ == "__main__":
+    settings = DEFAULT_SETTINGS
+    settings.ensure_dirs()
+
+    memory = MemoryStore(settings.memory_file)
+    assistant = PersonalAssistant(settings, memory)
+
+    app = QApplication([])
+    hud = HudWidget(settings.assistant_name)
+    hud.show()
+    hud.set_status("idle")
+
+    app.exec()
