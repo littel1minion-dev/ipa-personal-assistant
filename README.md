@@ -1,9 +1,10 @@
 # Ian's Personal Assistant (I.P.A.)
 
-An original, macOS-first desktop assistant prototype with a custom amber animated HUD and local memory.
+An original, macOS-first desktop assistant prototype with a procedural amber particle HUD and local memory.
 
 ## Current prototype
-- Animated amber holographic-style sphere with idle motion and status states.
+- Animated amber particle sphere and scanner-style interface, rendered in code without copied image assets.
+- Status states: idle, listening, thinking, and speaking.
 - Text conversation window.
 - Local key/value memory (`remember key = value`, `forget key`, `what do you remember`).
 - Memory viewer and settings information.
@@ -38,7 +39,7 @@ To reveal a response in the separate display panel, include a phrase such as `sh
 - `app/assistant.py` — local prototype response and memory commands
 - `app/config.py` — app settings
 - `app/memory.py` — local JSON memory
-- `app/ui/hud.py` — original animated core renderer
+- `app/ui/hud.py` — original procedural HUD renderer
 
 ## Privacy and safety
-The app has no model or network connection at this stage. Do not put secrets in memory. Review the dependency licenses and the applicable AI provider terms before adding a service or distributing the app.
+The app has no model or network connection at this stage. Do not put secrets in memory. Review dependency licenses and the applicable AI provider terms before adding a service or distributing the app.
