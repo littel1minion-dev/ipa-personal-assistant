@@ -2,4 +2,4 @@ PyQt6>=6.6.0
 python-dotenv>=1.0.0
 google-genai>=1.0.0
 keyring>=25.0.0
-sounddevice>=0.4.7
+sounddevice>=0.5.0

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
+import os
 
 from app.credentials import CredentialStoreError, load_api_key
 from app.gemini import GeminiClient, GeminiConfigurationError, GeminiRequestError
@@ -15,14 +15,13 @@ class AssistantState:
 
 
 class PersonalAssistant:
-    """Desktop assistant with local commands and an optional Gemini backend."""
+    """Text-chat assistant retained for local commands and non-live Gemini requests."""
 
     def __init__(self, settings, memory_store):
         self.settings = settings
         self.memory = memory_store
         self.state = AssistantState()
-        self._gemini: GeminiClient | None = None
-        self._api_key_override: str | None = None
+        self._client: GeminiClient | None = None
         try:
             self._saved_api_key = load_api_key()
         except CredentialStoreError:
@@ -30,83 +29,49 @@ class PersonalAssistant:
 
     @property
     def gemini_configured(self) -> bool:
-        return bool(self._api_key() or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
-
-    def _api_key(self) -> str | None:
-        return self._api_key_override or self._saved_api_key
-
-    def set_api_key(self, api_key: str | None) -> None:
-        """Use a key entered in Settings and rebuild the lazy Gemini client."""
-        if self._gemini is not None:
-            self._gemini.close()
-            self._gemini = None
-        self._api_key_override = api_key.strip() if api_key and api_key.strip() else None
-
-    def refresh_saved_api_key(self) -> None:
-        self._saved_api_key = load_api_key()
-        if self._gemini is not None:
-            self._gemini.close()
-            self._gemini = None
-
-    def set_status(self, status: str) -> None:
-        self.state.status = status
+        return bool(self._saved_api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
 
     def ask(self, text: str) -> str:
-        text = (text or "").strip()
-        if not text:
+        prompt = (text or "").strip()
+        if not prompt:
             return "I’m ready when you are."
-
-        self.set_status("thinking")
+        self.state.status = "thinking"
         try:
-            response = self._local_command(text)
+            response = self._local_command(prompt)
             if response is None:
-                response = self._ask_gemini(text)
+                if not self.gemini_configured:
+                    response = "Open Settings to securely add your Gemini API key."
+                else:
+                    key = self._saved_api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+                    if self._client is None:
+                        self._client = GeminiClient(self.settings.gemini_model, api_key=key)
+                    response = self._client.generate(prompt, self.state.history)
             self.state.last_response = response
-            self.state.history.extend((("user", text), ("assistant", response)))
+            self.state.history.extend((("user", prompt), ("assistant", response)))
             self.state.history = self.state.history[-20:]
             return response
+        except (GeminiConfigurationError, GeminiRequestError) as exc:
+            return f"Gemini request failed: {exc}"
         finally:
-            self.set_status("idle")
+            self.state.status = "idle"
 
-    def _local_command(self, text: str) -> str | None:
-        lower = text.lower()
-        if lower.startswith("remember "):
-            item = text[9:].strip()
-            if "=" not in item:
-                return "Use: remember key = value"
-            key, value = (part.strip() for part in item.split("=", 1))
-            if not key or not value:
-                return "Please include both a memory name and a value."
-            self.memory.remember(key, value)
-            return f"I saved that locally as ‘{key}’."
-
+    def _local_command(self, prompt: str) -> str | None:
+        lower = prompt.lower()
+        if lower.startswith("remember ") and "=" in prompt:
+            key, value = (part.strip() for part in prompt[9:].split("=", 1))
+            if key and value:
+                self.memory.remember(key, value)
+                return f"Saved locally as ‘{key}’."
         if lower.startswith("forget "):
-            key = text[7:].strip()
-            if not key:
-                return "Tell me the name of the memory to forget."
-            existed = self.memory.get(key) is not None
+            key = prompt[7:].strip()
             self.memory.forget(key)
-            return f"I forgot ‘{key}’." if existed else f"I couldn’t find a memory called ‘{key}’."
-
-        if "what do you remember" in lower or lower.strip() == "show memory":
+            return f"Forgot ‘{key}’."
+        if lower in {"what do you remember", "show memory"}:
             facts = self.memory.load()
-            if not facts:
-                return "I don’t have any saved facts yet. Try ‘remember favorite color = amber’."
-            return "Saved memories: " + "; ".join(f"{key}: {value}" for key, value in facts.items())
+            return "; ".join(f"{key}: {value}" for key, value in facts.items()) or "No saved memories yet."
         return None
 
-    def _ask_gemini(self, text: str) -> str:
-        api_key = self._api_key() or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            return "Gemini isn’t configured. Open Settings and add your Gemini API key to connect."
-        try:
-            if self._gemini is None:
-                self._gemini = GeminiClient(self.settings.gemini_model, api_key=api_key)
-            return self._gemini.generate(text, self.state.history)
-        except (GeminiConfigurationError, GeminiRequestError) as exc:
-            return f"I couldn’t reach Gemini: {exc}"
-
     def close(self) -> None:
-        if self._gemini is not None:
-            self._gemini.close()
-            self._gemini = None
+        if self._client is not None:
+            self._client.close()
+            self._client = None
