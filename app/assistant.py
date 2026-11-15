@@ -49,7 +49,7 @@ class PersonalAssistant:
                 return "Tell me the name of the memory to forget."
             existed = self.memory.get(key) is not None
             self.memory.forget(key)
-            return f"I forgot ‘{key}’." if existed else f“I couldn’t find a memory called ‘{key}’."
+            return f"I forgot ‘{key}’." if existed else f"I couldn’t find a memory called ‘{key}’."
 
         if "what do you remember" in lower or lower.strip() == "show memory":
             facts = self.memory.load()
