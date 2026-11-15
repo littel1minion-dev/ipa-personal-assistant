@@ -10,8 +10,8 @@ class Settings:
     assistant_name: str = "I.P.A."
     data_dir: Path = field(default_factory=lambda: Path("data"))
     memory_file: Path = field(default_factory=lambda: Path("data/memory.json"))
-    voice_enabled: bool = False
-    model_backend: str = "placeholder"
+    voice_enabled: bool = True
+    model_backend: str = "not-configured"
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
